@@ -291,6 +291,15 @@
             }
         }
 
+        @keyframes pulse {
+            0%, 100% {
+                transform: scale(1);
+            }
+            50% {
+                transform: scale(1.05);
+            }
+        }
+
         .container {
             animation: fadeIn 0.8s ease-out;
         }
@@ -302,6 +311,10 @@
     <div class="container">
         <h1>💰 Savings Group Number Picker</h1>
         <p class="subtitle">Pick a card to reveal your position! Each person picks once.</p>
+        
+        <div id="connectionStatus" style="display: none; background: rgba(100, 255, 100, 0.2); padding: 8px 15px; border-radius: 8px; margin-bottom: 15px; color: #90EE90; font-size: 0.9rem;">
+            🟢 Connected to Firebase
+        </div>
         
         <div id="userStatus" style="display: none; background: rgba(255, 215, 0, 0.2); padding: 10px 20px; border-radius: 10px; margin-bottom: 20px; color: #ffd700; font-weight: bold;">
             ⭐ You've already picked your card!
@@ -349,6 +362,11 @@
                 db = firebase.database();
                 isFirebaseConfigured = true;
                 console.log("✅ Firebase connected successfully!");
+                
+                // Show connection status
+                setTimeout(() => {
+                    document.getElementById('connectionStatus').style.display = 'block';
+                }, 100);
             } else {
                 console.warn("⚠️ Firebase not configured. Using local mode only.");
             }
@@ -366,6 +384,7 @@
         let sessionId = 'savings-session-' + new Date().toISOString().split('T')[0]; // Daily session
         let userSessionKey = 'ajo-picker-user-' + sessionId; // LocalStorage key for this session
         let hasUserPicked = false; // Track if current user has picked
+        let isSyncing = false; // Prevent re-entry during sync
 
         // ========================================
         // FIREBASE FUNCTIONS
@@ -374,22 +393,47 @@
             if (!isFirebaseConfigured) return;
 
             sessionRef = db.ref(sessionId);
+            console.log("📡 Setting up Firebase listener for:", sessionId);
             
             // Listen for changes in real-time
             sessionRef.on('value', (snapshot) => {
                 const data = snapshot.val();
+                console.log("📥 Firebase data received:", data);
+                
                 if (data && data.numbers) {
                     // Use existing session data
+                    console.log("♻️ Syncing with existing session");
                     syncWithFirebase(data);
                 } else {
                     // First user - create new session
+                    console.log("🆕 No session found, creating new one");
                     createCards();
                 }
+            }, (error) => {
+                console.error("❌ Firebase listener error:", error);
             });
+            
+            console.log("✅ Firebase listener attached");
         }
 
         function syncWithFirebase(data) {
             console.log("🔄 Syncing with Firebase session:", data);
+            
+            // Show sync indicator
+            const statusEl = document.getElementById('connectionStatus');
+            if (statusEl) {
+                statusEl.style.animation = 'pulse 0.5s ease-in-out';
+                setTimeout(() => {
+                    statusEl.style.animation = '';
+                }, 500);
+            }
+            
+            // Prevent re-entry
+            if (isSyncing) {
+                console.log("⏭️ Already syncing, skipping...");
+                return;
+            }
+            isSyncing = true;
             
             // Check if user has already picked in this session
             checkUserHasPicked();
@@ -398,16 +442,17 @@
             if (data.participantCount && data.participantCount !== participantCount) {
                 participantCount = data.participantCount;
                 updateAmountDisplay();
-                // Only recreate cards if participant count changed
-                if (!data.numbers || data.numbers.length !== participantCount) {
-                    return;
-                }
             }
 
-            // Use the same numbers from Firebase
-            if (data.numbers) {
+            // Check if we need to recreate cards (numbers changed or different count)
+            const needsRecreate = !numbers.length || 
+                                 JSON.stringify(numbers) !== JSON.stringify(data.numbers) ||
+                                 numbers.length !== participantCount;
+
+            if (needsRecreate && data.numbers) {
+                console.log("🔨 Recreating cards with new layout");
                 numbers = data.numbers;
-                console.log("📋 Using existing card layout from Firebase:", numbers);
+                console.log("📋 Using card layout from Firebase:", numbers);
                 
                 // Clear and recreate cards with Firebase numbers
                 const container = document.getElementById('cardsContainer');
@@ -449,13 +494,43 @@
                     container.appendChild(card);
                 });
 
-                console.log(`✅ Synced! ${flippedCount}/${participantCount} cards already picked`);
-
-                // Check if all cards are flipped
-                if (flippedCount === participantCount && flippedCount > 0) {
-                    setTimeout(() => createConfetti(), 600);
-                }
+                console.log(`✅ Cards recreated! ${flippedCount}/${participantCount} cards already picked`);
+            } else {
+                // Only update picked state without recreating cards
+                console.log("🔄 Updating picked cards only");
+                const container = document.getElementById('cardsContainer');
+                const cards = container.querySelectorAll('.card');
+                flippedCount = 0;
+                
+                cards.forEach((card, index) => {
+                    const isPicked = data.pickedCards && data.pickedCards[index];
+                    const wasAlreadyFlipped = card.classList.contains('flipped');
+                    
+                    if (isPicked && !wasAlreadyFlipped) {
+                        console.log(`🆕 Card ${index} newly picked, flipping it`);
+                        card.classList.add('flipped', 'picked');
+                        
+                        // Check if it's the user's card
+                        const userPickedCard = localStorage.getItem(userSessionKey);
+                        if (userPickedCard === String(index)) {
+                            card.classList.add('user-picked');
+                        }
+                    }
+                    
+                    if (isPicked) {
+                        flippedCount++;
+                    }
+                });
+                
+                console.log(`✅ Updated! ${flippedCount}/${participantCount} cards picked`);
             }
+
+            // Check if all cards are flipped
+            if (flippedCount === participantCount && flippedCount > 0) {
+                setTimeout(() => createConfetti(), 600);
+            }
+            
+            isSyncing = false;
         }
 
         function saveToFirebase(updates) {
@@ -529,6 +604,9 @@
         }
 
         function createCards() {
+            console.log("🎨 Creating new card layout...");
+            isSyncing = true; // Prevent listener from triggering sync during creation
+            
             const container = document.getElementById('cardsContainer');
             container.innerHTML = '';
             
@@ -563,8 +641,15 @@
                     pickedCards: {},
                     timestamp: Date.now()
                 };
-                sessionRef.set(sessionData);
-                console.log("✅ Cards shuffled and saved to Firebase:", sessionData);
+                sessionRef.set(sessionData).then(() => {
+                    console.log("✅ Cards shuffled and saved to Firebase:", sessionData);
+                    isSyncing = false;
+                }).catch((error) => {
+                    console.error("❌ Error saving to Firebase:", error);
+                    isSyncing = false;
+                });
+            } else {
+                isSyncing = false;
             }
         }
 
@@ -577,11 +662,13 @@
 
             // Check if this user has already picked a card
             if (hasUserPicked) {
-                const pickedCard = localStorage.getItem(userSessionKey);
-                alert(`⚠️ You already picked card ${pickedCard + 1}! You can only pick one card per session.`);
+                const pickedCard = localStorage.getItem(userSessionKey) + 1;
+                alert(`⚠️ You already picked card ${pickedCard}! You can only pick one card per session.`);
                 console.log("🚫 User tried to pick multiple cards");
                 return;
             }
+            
+            console.log(`👆 User clicking card ${index}...`);
             
             card.classList.add('flipped', 'picked', 'user-picked');
             flippedCount++;
@@ -593,8 +680,13 @@
 
             // Save to Firebase that this card was picked
             if (isFirebaseConfigured) {
-                sessionRef.child('pickedCards').child(index).set(true);
-                console.log(`📤 Synced card pick to Firebase: card ${index}`);
+                sessionRef.child('pickedCards').child(index).set(true)
+                    .then(() => {
+                        console.log(`📤 Successfully synced card pick to Firebase: card ${index}`);
+                    })
+                    .catch((error) => {
+                        console.error(`❌ Error syncing card pick:`, error);
+                    });
             }
 
             // Celebration effect when all cards are flipped
@@ -634,6 +726,9 @@
             
             // Clear user's pick from localStorage
             clearUserPick();
+            
+            // Reset syncing flag
+            isSyncing = false;
             
             const cards = document.querySelectorAll('.card');
             cards.forEach((card, index) => {
