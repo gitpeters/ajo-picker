@@ -30,6 +30,7 @@
             text-align: center;
             max-width: 800px;
             width: 100%;
+            animation: fadeIn 0.8s ease-out;
         }
 
         h1 {
@@ -92,11 +93,18 @@
             text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
         }
 
+        .participants-label {
+            font-size: 0.9rem;
+            color: rgba(255, 255, 255, 0.9);
+            margin-top: 5px;
+        }
+
         .amount {
             color: #ffd700;
             font-weight: bold;
             font-size: 1.2rem;
             margin-bottom: 30px;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.3);
         }
 
         .cards-container {
@@ -118,10 +126,10 @@
             opacity: 0.7;
         }
 
-        .card.user-picked {
-            border: 3px solid #ffd700 !important;
+        .card.user-picked .card-inner {
+            border: 4px solid #ffd700 !important;
             border-radius: 15px;
-            box-shadow: 0 0 20px rgba(255, 215, 0, 0.5);
+            box-shadow: 0 0 20px rgba(255, 215, 0, 0.6);
         }
 
         .card-inner {
@@ -182,43 +190,32 @@
             cursor: pointer;
             box-shadow: 0 5px 15px rgba(0,0,0,0.3);
             transition: all 0.3s ease;
+            margin-top: 20px;
         }
 
-        .celebrate {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            pointer-events: none;
-            z-index: 1000;
-        }
+        .reset-btn:hover { transform: translateY(-3px); box-shadow: 0 8px 20px rgba(0,0,0,0.4); }
 
-        @keyframes fall {
-            to { transform: translateY(100vh) rotate(360deg); opacity: 0; }
-        }
         @keyframes fadeOut {
-            to { opacity: 0; transform: scale(0.8); }
+            to { opacity: 0; transform: scale(0.5) translateY(-20px); }
         }
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(20px); }
             to { opacity: 1; transform: translateY(0); }
         }
-        .container { animation: fadeIn 0.8s ease-out; }
     </style>
 </head>
 <body>
-    <div class="celebrate" id="celebrate"></div>
+    <div id="celebrate" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1000;"></div>
     
     <div class="container">
         <h1>💰 Savings Group Number Picker</h1>
-        <p class="subtitle">Pick a card! The shuffle is synced for everyone.</p>
+        <p class="subtitle">Pick a card to reveal your position! Shuffling is synced for all.</p>
         
         <div id="connectionStatus" style="display: none; background: rgba(100, 255, 100, 0.2); padding: 8px 15px; border-radius: 8px; margin-bottom: 15px; color: #90EE90;">
             🟢 Connected to Firebase
         </div>
         
-        <div id="userStatus" style="display: none; background: rgba(255, 215, 0, 0.2); padding: 10px 20px; border-radius: 10px; margin-bottom: 20px; color: #ffd700;">
+        <div id="userStatus" style="display: none; background: rgba(255, 215, 0, 0.2); padding: 10px 20px; border-radius: 10px; margin-bottom: 20px; color: #ffd700; font-weight: bold;">
             ⭐ You've already picked your card!
         </div>
         
@@ -231,11 +228,11 @@
             <button class="control-btn" onclick="adjustParticipants(1)">+</button>
         </div>
 
-        <p class="amount" id="amountDisplay"></p>
+        <p class="amount" id="amountDisplay">Monthly Contribution: ₦150,000 | Total Pool: ₦600,000</p>
         
         <div class="cards-container" id="cardsContainer"></div>
 
-        <button class="reset-btn" onclick="resetCards()">🔄 Reset & Shuffle (Sync All)</button>
+        <button class="reset-btn" onclick="resetCards()">🔄 Reset & Shuffle</button>
     </div>
 
     <script>
@@ -256,113 +253,131 @@
         const sessionRef = db.ref(sessionId);
         const userSessionKey = 'ajo-picker-user-' + sessionId;
 
-        let numbers = [];
         let participantCount = 4;
+        let numbers = [];
         let lastResetTime = 0;
-        let isSyncing = false;
+        let isAnimating = false;
         let hasUserPicked = false;
 
         function initializeSession() {
+            console.log("📡 Listening to Firebase session:", sessionId);
             sessionRef.on('value', (snapshot) => {
                 const data = snapshot.val();
                 if (!data) {
-                    createInitialSession();
+                    console.log("🆕 Initializing new session data...");
+                    createNewShuffle();
                     return;
                 }
 
-                // SYNC RESET ANIMATION: If DB reset time is newer than our local tracker
+                // CHECK FOR REMOTE RESET SIGNAL
                 if (data.lastReset && data.lastReset > lastResetTime) {
+                    console.log("⚡ Remote Reset Detected! Animating...");
                     lastResetTime = data.lastReset;
-                    handleRemoteReset(); 
-                    return; 
+                    handleRemoteReset(data);
+                } else if (!isAnimating) {
+                    syncUI(data);
                 }
-
-                syncUI(data);
             });
             document.getElementById('connectionStatus').style.display = 'block';
         }
 
-        function createInitialSession() {
-            const numbersArray = Array.from({length: participantCount}, (_, i) => i + 1);
-            sessionRef.set({
-                numbers: shuffleArray(numbersArray),
-                participantCount: participantCount,
-                pickedCards: {},
-                lastReset: Date.now()
-            });
-        }
-
-        function syncUI(data) {
-            if (isSyncing) return;
-            isSyncing = true;
-
-            participantCount = data.participantCount || 4;
-            numbers = data.numbers || [];
-            updateAmountDisplay();
-            checkUserStatus();
-
-            const container = document.getElementById('cardsContainer');
-            container.innerHTML = '';
-            let flippedTotal = 0;
-
-            const myPick = localStorage.getItem(userSessionKey);
-
-            numbers.forEach((num, i) => {
-                const card = document.createElement('div');
-                card.className = 'card';
-                const isPicked = data.pickedCards && data.pickedCards[i];
-
-                if (isPicked) {
-                    card.classList.add('flipped', 'picked');
-                    flippedTotal++;
-                    if (myPick === String(i)) card.classList.add('user-picked');
-                }
-
-                card.onclick = () => flipCard(card, i);
-                card.innerHTML = `
-                    <div class="card-inner">
-                        <div class="card-front"></div>
-                        <div class="card-back"><div class="card-number">${num}</div></div>
-                    </div>`;
-                container.appendChild(card);
-            });
-
-            if (flippedTotal === participantCount && flippedTotal > 0) createConfetti();
-            isSyncing = false;
-        }
-
-        // TRIGGERED BY BUTTON: Updates Firebase
-        function resetCards() {
-            const numbersArray = Array.from({length: participantCount}, (_, i) => i + 1);
-            sessionRef.update({
-                numbers: shuffleArray(numbersArray),
-                pickedCards: null, // Clear all picks
-                lastReset: Date.now() // Signals all browsers to animate
-            });
-        }
-
-        // TRIGGERED BY FIREBASE: Animates the local UI
-        function handleRemoteReset() {
-            clearUserPick();
+        function handleRemoteReset(data) {
+            isAnimating = true;
+            localStorage.removeItem(userSessionKey); // Clear my local pick
+            
             const cards = document.querySelectorAll('.card');
+            if (cards.length === 0) {
+                isAnimating = false;
+                syncUI(data);
+                return;
+            }
+
+            // Play the fade out animation for all cards
             cards.forEach((card, i) => {
                 setTimeout(() => {
                     card.style.animation = 'fadeOut 0.4s forwards';
                 }, i * 50);
             });
 
-            // Wait for animation to finish then the value listener will re-render via syncUI
+            // Refresh cards after animation ends
             setTimeout(() => {
-                // The 'value' listener will automatically trigger syncUI because data changed
-            }, (cards.length * 50) + 400);
+                document.getElementById('cardsContainer').innerHTML = '';
+                isAnimating = false;
+                syncUI(data);
+                console.log("♻️ UI refreshed after shuffle animation.");
+            }, (cards.length * 50) + 500);
         }
 
-        function flipCard(card, index) {
-            if (card.classList.contains('flipped') || hasUserPicked) return;
+        function syncUI(data) {
+            console.log("📥 Syncing UI with DB state...");
+            participantCount = data.participantCount || 4;
+            numbers = data.numbers || [];
+            const pickedCards = data.pickedCards || {};
+            const myPickIndex = localStorage.getItem(userSessionKey);
 
-            hasUserPicked = true;
+            updateTextDisplays();
+            
+            const container = document.getElementById('cardsContainer');
+            container.innerHTML = '';
+            let totalFlipped = 0;
+
+            numbers.forEach((num, i) => {
+                const card = document.createElement('div');
+                card.className = 'card';
+                if (pickedCards[i]) {
+                    card.classList.add('flipped', 'picked');
+                    totalFlipped++;
+                    if (myPickIndex === String(i)) card.classList.add('user-picked');
+                }
+
+                card.onclick = () => flipCard(card, i, pickedCards[i]);
+                
+                card.innerHTML = `
+                    <div class="card-inner">
+                        <div class="card-front"></div>
+                        <div class="card-back">
+                            <div class="card-number">${num}</div>
+                        </div>
+                    </div>`;
+                container.appendChild(card);
+            });
+
+            if (totalFlipped === participantCount && participantCount > 0) {
+                createConfetti();
+            }
+
+            hasUserPicked = myPickIndex !== null;
+            document.getElementById('userStatus').style.display = hasUserPicked ? 'block' : 'none';
+        }
+
+        function flipCard(card, index, alreadyFlipped) {
+            if (alreadyFlipped) return;
+            
+            if (hasUserPicked) {
+                alert("⚠️ You've already picked a card! Only one per person.");
+                console.warn("🚫 Blocked: User tried to pick again.");
+                return;
+            }
+
+            console.log(`✅ Picking card index ${index}. Number revealed: ${numbers[index]}`);
             localStorage.setItem(userSessionKey, index);
             sessionRef.child('pickedCards').child(index).set(true);
+        }
+
+        function createNewShuffle() {
+            const arr = Array.from({length: participantCount}, (_, i) => i + 1);
+            const shuffled = arr.sort(() => Math.random() - 0.5);
+            sessionRef.set({
+                numbers: shuffled,
+                participantCount: participantCount,
+                pickedCards: {},
+                lastReset: Date.now()
+            });
+        }
+
+        function resetCards() {
+            console.log("🔄 Reset Button Clicked. Sending signal to all users...");
+            createNewShuffle();
         }
 
         function adjustParticipants(val) {
@@ -370,36 +385,27 @@
             resetCards();
         }
 
-        function shuffleArray(arr) {
-            return arr.sort(() => Math.random() - 0.5);
-        }
-
-        function updateAmountDisplay() {
+        function updateTextDisplays() {
             const total = participantCount * 150000;
             document.getElementById('participantsCount').textContent = participantCount;
             document.getElementById('amountDisplay').textContent = 
-                `Monthly: ₦150,000 | Total Pool: ₦${total.toLocaleString()}`;
-        }
-
-        function checkUserStatus() {
-            hasUserPicked = localStorage.getItem(userSessionKey) !== null;
-            document.getElementById('userStatus').style.display = hasUserPicked ? 'block' : 'none';
-        }
-
-        function clearUserPick() {
-            localStorage.removeItem(userSessionKey);
-            checkUserStatus();
+                `Monthly Contribution: ₦150,000 | Total Pool: ₦${total.toLocaleString()}`;
         }
 
         function createConfetti() {
             const celebrate = document.getElementById('celebrate');
-            for (let i = 0; i < 30; i++) {
+            const colors = ['#ffd700', '#ff69b4', '#00f2fe', '#f093fb'];
+            for (let i = 0; i < 40; i++) {
                 const c = document.createElement('div');
-                c.style.cssText = `position:absolute;width:10px;height:10px;background:#ffd700;left:${Math.random()*100}%;top:-10px;border-radius:50%;animation:fall ${2+Math.random()}s linear`;
+                c.style.cssText = `position:absolute; width:10px; height:10px; border-radius:50%; background:${colors[Math.floor(Math.random()*4)]}; left:${Math.random()*100}%; top:-10px; animation:fall ${2+Math.random()}s linear forwards;`;
                 celebrate.appendChild(c);
                 setTimeout(() => c.remove(), 3000);
             }
         }
+
+        const style = document.createElement('style');
+        style.textContent = `@keyframes fall { to { transform: translateY(100vh) rotate(360deg); opacity: 0; } }`;
+        document.head.appendChild(style);
 
         window.onload = initializeSession;
     </script>
